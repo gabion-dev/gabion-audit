@@ -1,0 +1,29 @@
+# .github/workflows/checks.yml
+#
+# Every push: the package builds and its tests pass. The audit itself is
+# not run here — whether a dependency is current changes with what others
+# publish, not with this push; it gates the release (publish.yml).
+
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - run: npm ci
+      - run: npm test

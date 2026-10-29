@@ -1,0 +1,92 @@
+# .github/workflows/publish.yml
+#
+# Stages the package on npm through trusted publishing: npm accepts the
+# short-lived OIDC identity of this workflow instead of a stored token, so
+# there is no publish secret in the repository to leak.
+#
+# The workflow can only stage. A staged version stays invisible until a
+# maintainer approves it on npmjs.com (Staged Packages) or with
+# `npm stage approve <stage-id>`, both behind two-factor authentication, so
+# a compromised workflow cannot put a release in front of users. The trusted
+# publisher on npm allows `npm stage publish` alone; `npm publish` from here
+# is rejected.
+#
+# The first version of a new package cannot be staged — see the steps
+# below.
+#
+# A pushed version tag is the release decision. package.json carries the
+# number, and the job refuses when the tag and the number disagree, so a
+# tag can never stage a version other than the one it names.
+
+name: Stage on npm
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # required for the npm trusted-publishing OIDC exchange
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false # a release build never reuses a cache
+
+      - name: Tag matches package.json version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $expected" >&2
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm test
+
+      # The package judges its own dependencies before it is staged: a
+      # release goes out current, or with every lag declared and reasoned.
+      - name: Audit of the package's own dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node dist/cli/gabion-audit.js
+
+      - run: npm run build
+
+      # Trusted publishing can be set up only for a package that exists, so
+      # the first version of a new package goes out with a one-time token
+      # (secret NPM_FIRST_PUBLISH_TOKEN), deleted right after it together
+      # with the token on npm; every later version is staged.
+      - name: Is this the first version of the package?
+        id: registry
+        run: |
+          if npm view "$(node -p "require('./package.json').name")" version > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: First version, with the one-time token
+        if: steps.registry.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_FIRST_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "The package is not on npm yet and the secret NPM_FIRST_PUBLISH_TOKEN is not set" >&2
+            exit 1
+          fi
+          npm publish --access public
+
+      - name: Every later version, staged for approval
+        if: steps.registry.outputs.exists == 'true'
+        run: npm stage publish # needs npm 11.15.0 or later
