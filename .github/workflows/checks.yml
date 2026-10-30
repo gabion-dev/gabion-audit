@@ -1,13 +1,17 @@
 # .github/workflows/checks.yml
 #
-# Every push: the package builds and its tests pass. The audit itself is
-# not run here — whether a dependency is current changes with what others
-# publish, not with this push; it gates the release (publish.yml).
+# Every push of a branch: the package builds and its tests pass. A pushed
+# version tag does not run them again — it names a commit its branch
+# already checked, and publish.yml runs the tests itself before staging.
+# The audit is not run here either — whether a dependency is current
+# changes with what others publish, not with this push; it gates the
+# release (publish.yml).
 
 name: Checks
 
 on:
   push:
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
