@@ -3,9 +3,10 @@
 # Every push of a branch: the package builds and its tests pass. A pushed
 # version tag does not run them again — it names a commit its branch
 # already checked, and publish.yml runs the tests itself before staging.
-# The audit is not run here either — whether a dependency is current
-# changes with what others publish, not with this push; it gates the
-# release (publish.yml).
+# The audit of the package's own tree is not run here either — an
+# advisory appears with what others publish, not with this push; it gates
+# the release (publish.yml). Renovate opens the pull requests that keep
+# the dependencies current, and this workflow is the check they pass.
 
 name: Checks
 

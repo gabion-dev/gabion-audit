@@ -1,53 +1,35 @@
 // src/audit.ts
 /**
- * The audit of one repository: the freshness of every release it pins, and
- * the advisories in the npm trees it names.
+ * The audit of one repository: the advisories in the npm trees it names,
+ * and any section the caller judged itself.
  *
- * Only what is undeclared is red. A deviation kept on purpose is declared
+ * Only what is undeclared is red. An advisory kept on purpose is declared
  * in the audit file with its reason and the event that ends it; a
  * declaration that matches nothing any more is red as well, so an excuse
- * cannot outlive its cause and cover the next lag unjudged.
+ * cannot outlive its cause and cover the next advisory unjudged.
  *
- * Verdicts: passed — nothing undeclared; refused — an undeclared advisory
- * or lag, a dead declaration, an inventory that could not be read;
- * unable — something could not be judged (a source did not answer,
- * npm audit failed). A refusal outranks an inability.
+ * Whether a dependency is current is not judged here: Renovate proposes
+ * each newer release as a pull request, and a lag kept on purpose is a
+ * package rule of its configuration. The audit gates a release on what a
+ * bot cannot decide for the repository — a known vulnerability in the tree
+ * a consumer installs.
+ *
+ * Verdicts: passed — nothing undeclared; refused — an undeclared advisory,
+ * a dead declaration, an audit file that cannot be read, or nothing to
+ * judge at all; unable — something could not be judged (npm audit failed).
+ * A refusal outranks an inability.
  */
 
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import semver from "semver";
-import { builtinSources, cargoRange } from "./builtin-sources.js";
 import { CONFIG_FILE, readConfig, type AuditConfig } from "./config.js";
-import { cargoUses } from "./inventory/cargo.js";
-import { githubActionUses } from "./inventory/github-actions.js";
-import { gradleUses } from "./inventory/gradle.js";
-import { npmUses } from "./inventory/npm.js";
-import { pinUses } from "./inventory/pins.js";
-import { rustToolchainUses } from "./inventory/rust-toolchain.js";
-import { crateRequirements, currentRelease, npmPackument, SourceUnavailable } from "./sources.js";
-import type {
-  AcceptedAdvisory,
-  AcceptedLag,
-  AdvisoryTree,
-  DependencyUse,
-  Finding,
-  ReleaseCatalog,
-  Section,
-  SourceDefinition,
-  Verdict,
-} from "./types.js";
-import { compareVersions, isOnLine, isPreRelease, lineOf, newestOf } from "./versions.js";
+import type { AcceptedAdvisory, AdvisoryTree, Finding, Section, Verdict } from "./types.js";
 
 export interface AuditOptions {
-  /** The repository root: inventory, audit file and trees are read relative to it. */
+  /** The repository root: the audit file and its trees are read relative to it. */
   readonly root: string;
   /** The audit file, already read; read from `root` when absent. */
   readonly config?: AuditConfig;
-  /** Uses the caller inventories itself — pins in its own code, a manifest of its own format. */
-  readonly extraUses?: () => readonly DependencyUse[];
-  /** Sources of the caller's own uses, by the `source` they carry. */
-  readonly sources?: Readonly<Record<string, SourceDefinition>>;
   /** npm trees the caller prepares itself, judged with those of the audit file. */
   readonly advisoryTrees?: readonly AdvisoryTree[];
   /** Sections the caller judged itself (a policy of its own), reported first. */
@@ -59,6 +41,9 @@ export interface AuditResult {
   readonly verdict: Verdict;
   readonly text: string;
 }
+
+/** Something that could not be read; the report names it as the reason a judgement is missing. */
+export class SourceUnavailable extends Error {}
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -189,249 +174,6 @@ function advisorySection(root: string, trees: readonly AdvisoryTree[], accepted:
 }
 
 // ==========================================
-// Freshness
-// ==========================================
-
-interface UseJudgement {
-  readonly use: DependencyUse;
-  /** The release the source calls current; undefined when the source could not be read. */
-  readonly newest?: string;
-  readonly finding?: Finding;
-  /** The declaration that accepted this use's lag. */
-  readonly acceptedBy?: AcceptedLag;
-}
-
-/** isOnLine for registry versions, which may be in notations the ordering rule cannot read. */
-function isOnLineSafe(version: string, line: string): boolean {
-  try {
-    return isOnLine(version, line);
-  } catch {
-    // A version the ordering rule cannot read cannot lie on a line either:
-    // the registry lists what publishers uploaded, and newestOf skips the
-    // same versions for the same reason.
-    return false;
-  }
-}
-
-class Judge {
-  private readonly catalogs = new Map<string, Promise<ReleaseCatalog>>();
-
-  constructor(
-    private readonly sources: Readonly<Record<string, SourceDefinition>>,
-    private readonly lags: readonly AcceptedLag[],
-  ) {}
-
-  sourceOf(use: DependencyUse): SourceDefinition {
-    const source = this.sources[use.source];
-    if (source === undefined) throw new Error(`no source defined for "${use.source}" uses`);
-    return source;
-  }
-
-  private catalogFor(use: DependencyUse): Promise<ReleaseCatalog> {
-    const key = `${use.source}\0${use.name}`;
-    const cached = this.catalogs.get(key);
-    if (cached !== undefined) return cached;
-    const loading = this.sourceOf(use).catalog(use);
-    this.catalogs.set(key, loading);
-    return loading;
-  }
-
-  private shown(use: DependencyUse, version: string): string {
-    const tagOf = this.sourceOf(use).tagOf;
-    return tagOf === undefined ? version : tagOf(use, version);
-  }
-
-  label(source: string): string {
-    return this.sources[source]?.label ?? source;
-  }
-
-  async judge(use: DependencyUse): Promise<UseJudgement> {
-    let subject = `${use.source} ${use.name} ${use.version} (${use.site})`;
-    let source: SourceDefinition;
-    let catalog: ReleaseCatalog;
-    try {
-      source = this.sourceOf(use);
-      subject = `${source.label} ${use.name} ${this.shown(use, use.version)} (${use.site})`;
-      catalog = await this.catalogFor(use);
-    } catch (error) {
-      return {
-        use,
-        finding: { outcome: error instanceof SourceUnavailable ? "unable" : "refused", text: `${subject}: ${errorText(error)}` },
-      };
-    }
-    const usedIsPreRelease = isPreRelease(use.version);
-    const newest = currentRelease(catalog, usedIsPreRelease);
-    if (newest === undefined) {
-      return { use, finding: { outcome: "unable", text: `${subject}: the source lists no release to compare with` } };
-    }
-    const current =
-      use.precision === "line" ? isOnLineSafe(newest, use.version) : compareVersions(use.version, newest) >= 0;
-    if (current) return { use, newest };
-
-    const behind = `${subject} — newest ${this.shown(use, newest)}`;
-    const declaration = this.lags.find((candidate) => candidate.source === use.source && candidate.name === use.name);
-    if (declaration === undefined) {
-      return {
-        use,
-        newest,
-        finding: {
-          outcome: "refused",
-          text: `${behind}. Take it (${source.takeBy(use, newest)}) or declare the lag in ${CONFIG_FILE} with its reason.`,
-        },
-      };
-    }
-    if (!isOnLine(use.version, declaration.heldLine) || !isOnLine(newest, declaration.coversLatestLine)) {
-      return {
-        use,
-        newest,
-        finding: {
-          outcome: "refused",
-          text:
-            `${behind}. ${CONFIG_FILE} accepts ${use.name} held on ${declaration.heldLine} ` +
-            `while the newest release is on ${declaration.coversLatestLine}; here the use is on ` +
-            `${lineOf(use.version, declaration.heldLine)} and the newest on ` +
-            `${lineOf(newest, declaration.coversLatestLine)} — a case the declared reason was not written for: judge it again.`,
-        },
-      };
-    }
-    if (use.precision !== "line") {
-      const newestOnHeldLine = newestOf(
-        catalog.versions.filter((version) => isOnLineSafe(version, declaration.heldLine)),
-        usedIsPreRelease,
-      );
-      if (newestOnHeldLine !== undefined && compareVersions(use.version, newestOnHeldLine) < 0) {
-        return {
-          use,
-          newest,
-          finding: {
-            outcome: "refused",
-            text:
-              `${subject} — held on ${declaration.heldLine} as declared, but ${this.shown(use, newestOnHeldLine)} is the ` +
-              `newest release of that line. Take it (${source.takeBy(use, newestOnHeldLine)}).`,
-          },
-        };
-      }
-    }
-    return {
-      use,
-      newest,
-      acceptedBy: declaration,
-      finding: { outcome: "accepted", text: `${behind} — declared: ${declaration.reason}` },
-    };
-  }
-
-  /** Why an accepted lag no longer protects anything; undefined while it still does. */
-  async dead(declaration: AcceptedLag, judgements: readonly UseJudgement[]): Promise<string | undefined> {
-    const label = `${CONFIG_FILE}: ${this.label(declaration.source)} ${declaration.name} held on ${declaration.heldLine}`;
-    const uses = judgements.filter(
-      (judgement) => judgement.use.source === declaration.source && judgement.use.name === declaration.name,
-    );
-    if (uses.length === 0) return `${label} — the repository uses no such dependency: remove the declaration.`;
-    // Undecidable while a source did not answer; the unanswered use is
-    // already reported as such.
-    if (uses.some((judgement) => judgement.newest === undefined)) return undefined;
-    if (!uses.some((judgement) => judgement.acceptedBy === declaration)) {
-      return `${label} — no use of it lags under this declaration any more: remove the declaration.`;
-    }
-
-    const lift = declaration.liftedWhen;
-    if (lift === undefined) return undefined;
-    const newest = uses.find((judgement) => judgement.newest !== undefined)?.newest;
-    switch (lift.kind) {
-      case "requirer-admits": {
-        const admitted = await this.requirerRange(declaration, lift.package);
-        if (admitted.range === undefined) {
-          return `${label} — ${lift.package} ${admitted.release} declares no requirement on ${declaration.name}, so the declared reason can no longer be observed: judge the lag again.`;
-        }
-        if (newest !== undefined && semver.satisfies(newest, admitted.range)) {
-          return `${label} — ${lift.package} ${admitted.release} admits ${declaration.name} ${newest} (${admitted.range}): the reason is gone, take the newer line and remove the declaration.`;
-        }
-        return undefined;
-      }
-      case "follows-use": {
-        const followed = judgements.filter(
-          (judgement) => judgement.use.source === lift.source && judgement.use.name === lift.name,
-        );
-        if (followed.length === 0) {
-          return `${label} — it follows ${lift.source} ${lift.name}, which the repository does not use: judge the lag again.`;
-        }
-        const off = followed.find((judgement) => !isOnLineSafe(judgement.use.version, declaration.heldLine));
-        if (off !== undefined) {
-          return `${label} — ${lift.name} is at ${off.use.version} (${off.use.site}), off the held line: move ${declaration.name} with it and remove the declaration.`;
-        }
-        return undefined;
-      }
-    }
-  }
-
-  /** The range the newest release of `requirer` declares for the held dependency, as a semver range. */
-  private async requirerRange(
-    declaration: AcceptedLag,
-    requirer: string,
-  ): Promise<{ readonly release: string; readonly range?: string }> {
-    if (declaration.source === "npm") {
-      const packument = await npmPackument(requirer);
-      const release = currentRelease(packument.catalog, false);
-      if (release === undefined) throw new SourceUnavailable(`${requirer} lists no release`);
-      const range = packument.peerRanges.get(release)?.[declaration.name];
-      return range === undefined ? { release } : { release, range };
-    }
-    if (declaration.source === "crates") {
-      const release = currentRelease(await this.catalogFor({ source: "crates", name: requirer, version: "0", site: "" }), false);
-      if (release === undefined) throw new SourceUnavailable(`${requirer} lists no release`);
-      const requirement = (await crateRequirements(requirer, release))[declaration.name];
-      const range = requirement === undefined ? null : cargoRange(requirement);
-      return range === null ? { release } : { release, range };
-    }
-    throw new Error(`requirer-admits is observable for npm and crates lags, not ${declaration.source}`);
-  }
-}
-
-function inventory(root: string, config: AuditConfig, extra?: () => readonly DependencyUse[]): DependencyUse[] {
-  const names = config.pins.map((pin) => pin.name);
-  const repeated = names.find((name, index) => names.indexOf(name) !== index);
-  if (repeated !== undefined) {
-    throw new Error(`${CONFIG_FILE}: two pins are named ${repeated} — a pin's name is its identity`);
-  }
-  return [
-    ...npmUses(root),
-    ...cargoUses(root),
-    ...rustToolchainUses(root),
-    ...gradleUses(root),
-    ...githubActionUses(root),
-    ...pinUses(root, config.pins),
-    ...(extra?.() ?? []),
-  ];
-}
-
-async function freshnessSection(root: string, config: AuditConfig, options: AuditOptions): Promise<Section> {
-  const judge = new Judge({ ...builtinSources(config.pins), ...options.sources }, config.acceptedLags);
-  let uses: readonly DependencyUse[];
-  try {
-    uses = inventory(root, config, options.extraUses);
-  } catch (error) {
-    return { title: "Freshness", findings: [{ outcome: "refused", text: `inventory: ${errorText(error)}` }], passed: "nothing judged" };
-  }
-  const judgements = await Promise.all(uses.map((use) => judge.judge(use)));
-  const findings = judgements
-    .map((judgement) => judgement.finding)
-    .filter((finding): finding is Finding => finding !== undefined);
-  for (const declaration of config.acceptedLags) {
-    try {
-      const dead = await judge.dead(declaration, judgements);
-      if (dead !== undefined) findings.push({ outcome: "refused", text: dead });
-    } catch (error) {
-      findings.push({
-        outcome: error instanceof SourceUnavailable ? "unable" : "refused",
-        text: `${CONFIG_FILE}: ${declaration.name}: ${errorText(error)}`,
-      });
-    }
-  }
-  const current = judgements.filter((judgement) => judgement.finding === undefined).length;
-  return { title: "Freshness", findings, passed: `${String(current)} of ${String(judgements.length)} uses at the newest release` };
-}
-
-// ==========================================
 // Report
 // ==========================================
 
@@ -453,7 +195,7 @@ export function report(sections: readonly Section[]): { readonly text: string; r
   const verdict: Verdict = refused > 0 ? "refused" : unable > 0 ? "unable" : "passed";
   lines.push(
     verdict === "passed"
-      ? `Audit passed: nothing undeclared (${String(count("accepted"))} declared deviations).`
+      ? `Audit passed: nothing undeclared (${String(count("accepted"))} declared advisories).`
       : `Audit ${verdict === "refused" ? "refused" : "incomplete"}: ${String(refused)} undeclared, ` +
           `${String(unable)} not judged, ${String(count("accepted"))} declared. ` +
           "✗ — undeclared or dead; ? — could not be judged; · — declared.",
@@ -474,12 +216,23 @@ export async function audit(options: AuditOptions): Promise<AuditResult> {
     return { sections, ...report(sections) };
   }
   const trees = [...config.advisoryTrees, ...(options.advisoryTrees ?? [])];
-  const sections = [
-    ...(options.sections ?? []),
-    ...(trees.length > 0 || config.acceptedAdvisories.length > 0
-      ? [advisorySection(options.root, trees, config.acceptedAdvisories)]
-      : []),
-    await freshnessSection(options.root, config, options),
-  ];
+  const sections: Section[] = [...(options.sections ?? [])];
+  if (trees.length > 0 || config.acceptedAdvisories.length > 0) {
+    sections.push(advisorySection(options.root, trees, config.acceptedAdvisories));
+  }
+  // An audit that judged nothing would pass by silence: a repository that
+  // names no tree has not been audited, and the report says so.
+  if (sections.length === 0) {
+    sections.push({
+      title: "Nothing to judge",
+      findings: [
+        {
+          outcome: "refused",
+          text: `no npm tree is named — list the trees consumers install in ${CONFIG_FILE} (advisoryTrees), or remove the audit from a repository that installs nothing from npm.`,
+        },
+      ],
+      passed: "nothing audited",
+    });
+  }
   return { sections, ...report(sections) };
 }

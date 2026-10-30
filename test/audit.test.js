@@ -1,119 +1,125 @@
 // test/audit.test.js
-// The judgement of the audit against sources the test defines: every
-// outcome a use and a declaration can reach, without the network.
+// The judgement of the audit against an npm the test provides: every
+// outcome a tree and a declaration can reach, without the network. The
+// audit spawns `npm` by name, so a script of that name first on PATH
+// answers for the registry, by the directory it is asked about.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
-import { audit, SourceUnavailable } from "../dist/index.js";
+import { after, before, test } from "node:test";
+import { audit, parseConfig } from "../dist/index.js";
 
-// An empty git repository: the inventory reads tracked files and finds
-// none, so only the uses the test passes are judged.
 const root = mkdtempSync(join(tmpdir(), "gabion-audit-test-"));
-spawnSync("git", ["init", "--quiet"], { cwd: root });
-after(() => rmSync(root, { recursive: true, force: true }));
+const bin = join(root, "bin");
+const originalPath = process.env["PATH"];
 
-const releases = { tool: ["1.0.0", "1.2.0", "2.0.0", "2.1.0"], action: ["6.0.0", "7.0.0", "7.1.2"] };
+// Trees answer by their directory name: "clean" reports nothing, "lodash"
+// reports one advisory in lodash, "broken" is an npm that could not run.
+const FAKE_NPM = `#!/bin/sh
+case "$(basename "$PWD")" in
+  clean) echo '{"vulnerabilities":{}}' ;;
+  lodash) echo '{"vulnerabilities":{"lodash":{"via":[{"name":"lodash","url":"https://github.com/advisories/GHSA-test","severity":"high","title":"Prototype pollution"}]},"app":{"via":["lodash"]}}}'; exit 1 ;;
+  *) echo "npm ERR! not a tree" >&2; exit 2 ;;
+esac
+`;
 
-const sources = {
-  test: {
-    label: "test",
-    catalog: async (use) => {
-      if (use.name === "silent") throw new SourceUnavailable("no answer");
-      return { versions: releases[use.name] ?? [] };
-    },
-    takeBy: () => "raise it",
-  },
-};
+before(() => {
+  mkdirSync(bin);
+  writeFileSync(join(bin, "npm"), FAKE_NPM);
+  chmodSync(join(bin, "npm"), 0o755);
+  for (const tree of ["clean", "lodash", "broken"]) mkdirSync(join(root, tree));
+  process.env["PATH"] = `${bin}:${originalPath ?? ""}`;
+});
 
-const config = (acceptedLags = []) => ({ pins: [], advisoryTrees: [], acceptedLags, acceptedAdvisories: [] });
+after(() => {
+  process.env["PATH"] = originalPath;
+  rmSync(root, { recursive: true, force: true });
+});
 
-const use = (name, version, extra = {}) => ({ source: "test", name, version, site: "test", ...extra });
-
-async function run(uses, acceptedLags) {
-  return audit({ root, config: config(acceptedLags), sources, extraUses: () => uses });
-}
-
-const lag = (extra = {}) => ({
-  source: "test",
-  name: "tool",
-  heldLine: "1",
-  coversLatestLine: "2",
+const config = (advisoryTrees = [], acceptedAdvisories = []) => ({ advisoryTrees, acceptedAdvisories });
+const tree = (name, directory = name) => ({ name, directory, args: [] });
+const declaration = (extra = {}) => ({
+  tree: "lodash",
+  package: "lodash",
+  advisory: "https://github.com/advisories/GHSA-test",
   reason: "kept for the test",
   reviewWhen: "never",
   ...extra,
 });
 
-test("a use at the newest release passes", async () => {
-  const result = await run([use("tool", "2.1.0")]);
+test("a tree without advisories passes", async () => {
+  const result = await audit({ root, config: config([tree("clean")]) });
   assert.equal(result.verdict, "passed");
+  assert.match(result.text, /1 of 1 trees audited, 0 advisories/);
 });
 
-test("an undeclared lag is refused and names the newest release", async () => {
-  const result = await run([use("tool", "2.0.0")]);
+test("an undeclared advisory is refused and named with its address", async () => {
+  const result = await audit({ root, config: config([tree("lodash")]) });
   assert.equal(result.verdict, "refused");
-  assert.match(result.text, /newest 2\.1\.0/);
+  assert.match(result.text, /lodash — high, Prototype pollution \(https:\/\/github.com\/advisories\/GHSA-test\)/);
 });
 
-test("a declared lag on the newest release of its held line is accepted", async () => {
-  const result = await run([use("tool", "1.2.0")], [lag()]);
+test("a package listed only as the effect of another's advisory is not repeated", async () => {
+  const result = await audit({ root, config: config([tree("lodash")]) });
+  assert.equal(result.text.split("\n").filter((line) => line.startsWith("  ✗")).length, 1);
+});
+
+test("a declared advisory is accepted with its reason", async () => {
+  const result = await audit({ root, config: config([tree("lodash")], [declaration()]) });
   assert.equal(result.verdict, "passed");
   assert.match(result.text, /declared: kept for the test/);
 });
 
-test("a declared lag below the newest release of its held line is refused", async () => {
-  const result = await run([use("tool", "1.0.0")], [lag()]);
+test("a declaration npm audit no longer reports is dead", async () => {
+  const result = await audit({ root, config: config([tree("lodash", "clean")], [declaration()]) });
   assert.equal(result.verdict, "refused");
-  assert.match(result.text, /1\.2\.0 is the newest release of that line/);
+  assert.match(result.text, /no longer reports — remove the declaration/);
 });
 
-test("a use off the declared held line is a case the reason was not written for", async () => {
-  const result = await run([use("tool", "2.0.0")], [lag()]);
+test("a declaration naming a tree that is not audited is dead", async () => {
+  const result = await audit({ root, config: config([tree("clean")], [declaration({ tree: "elsewhere" })]) });
   assert.equal(result.verdict, "refused");
-  assert.match(result.text, /judge it again/);
+  assert.match(result.text, /no audited tree has that name/);
 });
 
-test("a declaration whose dependency is current is dead", async () => {
-  const result = await run([use("tool", "2.1.0")], [lag({ heldLine: "2", coversLatestLine: "2" })]);
-  assert.equal(result.verdict, "refused");
-  assert.match(result.text, /no use of it lags under this declaration any more/);
-});
-
-test("a declaration of a dependency the repository does not use is dead", async () => {
-  const result = await run([], [lag()]);
-  assert.equal(result.verdict, "refused");
-  assert.match(result.text, /uses no such dependency/);
-});
-
-test("a use pinned to a line is current while the newest release lies on it", async () => {
-  assert.equal((await run([use("action", "7", { precision: "line" })])).verdict, "passed");
-  assert.equal((await run([use("action", "6", { precision: "line" })])).verdict, "refused");
-});
-
-test("a source that does not answer leaves the use unjudged, not current", async () => {
-  const result = await run([use("silent", "1.0.0")]);
+test("an npm that cannot answer leaves the tree unjudged, not clean", async () => {
+  const result = await audit({ root, config: config([tree("broken")]) });
   assert.equal(result.verdict, "unable");
+  assert.match(result.text, /\? broken tree: npm audit/);
 });
 
-test("follows-use: the lag is dead once the followed use leaves the held line", async () => {
-  const follows = lag({ name: "types", liftedWhen: { kind: "follows-use", source: "test", name: "runtime" } });
-  releases.types = ["1.5.0", "2.0.0"];
-  releases.runtime = ["1.9.0", "2.0.0"];
-  const held = await run([use("types", "1.5.0"), use("runtime", "1.9.0", { precision: "release" })], [follows]);
-  assert.match(held.text, /declared: kept for the test/);
-  const moved = await run([use("types", "1.5.0"), use("runtime", "2.0.0")], [follows]);
-  assert.match(moved.text, /off the held line: move types with it/);
-});
-
-test("a use whose source is not defined is refused, not skipped", async () => {
+test("a tree the caller prepares is judged and disposed of", async () => {
+  let disposed = false;
   const result = await audit({
     root,
     config: config(),
-    extraUses: () => [{ source: "nowhere", name: "x", version: "1.0.0", site: "test" }],
+    advisoryTrees: [{ name: "prepared", directory: () => ({ directory: join(root, "clean"), dispose: () => (disposed = true) }) }],
+  });
+  assert.equal(result.verdict, "passed");
+  assert.ok(disposed);
+});
+
+test("a refusal outranks an inability, and a caller's section is reported first", async () => {
+  const result = await audit({
+    root,
+    config: config([tree("broken")]),
+    sections: [{ title: "Policy", findings: [{ outcome: "refused", text: "a forced version is missing" }], passed: "agreed" }],
   });
   assert.equal(result.verdict, "refused");
-  assert.match(result.text, /no source defined for "nowhere"/);
+  assert.ok(result.text.startsWith("Policy: agreed"));
+});
+
+test("an audit with nothing to judge is refused, not passed by silence", async () => {
+  const result = await audit({ root, config: config() });
+  assert.equal(result.verdict, "refused");
+  assert.match(result.text, /no npm tree is named/);
+});
+
+test("the audit file's shape is checked before anything is judged", () => {
+  assert.throws(() => parseConfig({ advisoryTrees: [{ name: "x" }] }), /advisoryTrees\[0\]\.directory: expected a non-empty string/);
+  assert.throws(() => parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "w", extra: 1 }] }), /unknown field/);
+  assert.throws(() => parseConfig({ pins: [] }), /no longer judges freshness/);
+  assert.deepEqual(parseConfig({}), { advisoryTrees: [], acceptedAdvisories: [] });
 });

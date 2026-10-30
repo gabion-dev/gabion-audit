@@ -4,8 +4,8 @@
  * gabion-audit — audit the repository in the current directory, or in the
  * directory given as the only argument, by its gabion-audit.json.
  *
- * Exit codes: 0 — nothing undeclared; 1 — something undeclared or dead;
- * 2 — something could not be judged.
+ * Exit codes: 0 — nothing undeclared; 1 — something undeclared or dead,
+ * or nothing to judge; 2 — something could not be judged.
  */
 
 import { resolve } from "node:path";

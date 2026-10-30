@@ -1,104 +1,110 @@
 // src/config.ts
 /**
  * The audit's file in a repository, `gabion-audit.json` at its root: the
- * releases the repository pins in files no manifest describes, the npm
- * trees whose advisories are judged, and the deviations it keeps on
+ * npm trees whose advisories are judged, and the advisories it keeps on
  * purpose — each with its reason and the event that ends it.
  *
  * Plain JSON, so a repository of any language can carry it. Its shape is
  * checked before anything is judged: a misspelled field would otherwise
- * read as "nothing declared" and turn a kept deviation into a refusal, or
- * a pin into nothing judged at all.
+ * read as "nothing declared" and turn a kept advisory into a refusal, or a
+ * tree into nothing judged at all. The check is written by hand rather
+ * than with a schema library: the file has two kinds of entry, and the
+ * package then needs nothing at run time — a repository runs it with
+ * `npx` before its release, and every dependency it pulled in would be
+ * resolved fresh on that machine, outside the lock file of any repository.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { z } from "zod";
+import type { AcceptedAdvisory } from "./types.js";
 
 export const CONFIG_FILE = "gabion-audit.json";
 
-const text = z.string().min(1);
+/** An npm tree as the audit file names it: a directory of the repository. */
+export interface ConfiguredAdvisoryTree {
+  readonly name: string;
+  readonly directory: string;
+  readonly args: readonly string[];
+}
 
-const pinSource = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("github-releases"),
-    repository: text,
-    /** The tag of a release; its first capture group is the version. */
-    tagPattern: text.default("^v?(\\d.*)$"),
-  }),
-  z.strictObject({
-    kind: z.literal("github-tags"),
-    repository: text,
-    tagPattern: text.default("^v?(\\d.*)$"),
-  }),
-  z.strictObject({ kind: z.literal("npm"), package: text }),
-  z.strictObject({ kind: z.literal("crates"), crate: text }),
-  z.strictObject({ kind: z.literal("maven"), coordinate: text }),
-  z.strictObject({
-    kind: z.literal("listing"),
-    url: text,
-    /** A version the page names; its first capture group is the version. */
-    pattern: text,
-  }),
-]);
-
-export type PinSource = z.infer<typeof pinSource>;
+export interface AuditConfig {
+  readonly advisoryTrees: readonly ConfiguredAdvisoryTree[];
+  readonly acceptedAdvisories: readonly AcceptedAdvisory[];
+}
 
 /**
- * A release pinned in a file no manifest describes — a version variable in
- * a build script. `pattern` finds it; its first capture group is the
- * version. Every file named must contain it exactly once: a pin the
- * pattern no longer finds is an error, not a pin judged by nothing.
+ * Fields the file carried while the audit judged freshness too. Named
+ * here so a file left over from that time is refused with where the
+ * concern went, not with "unknown field".
  */
-const pin = z.strictObject({
-  name: text,
-  files: z.array(text).min(1),
-  pattern: text,
-  source: pinSource,
-  /** How a newer release reaches the pin — said in the report next to the lag. */
-  takeBy: text,
-});
+const RETIRED_FIELDS: ReadonlySet<string> = new Set(["pins", "acceptedLags"]);
 
-export type Pin = z.infer<typeof pin>;
+class ShapeError extends Error {}
 
-const liftCondition = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("requirer-admits"), package: text }),
-  z.strictObject({ kind: z.literal("follows-use"), source: text, name: text }),
-]);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-const acceptedLag = z.strictObject({
-  source: text,
-  name: text,
-  heldLine: text,
-  coversLatestLine: text,
-  reason: text,
-  reviewWhen: text,
-  liftedWhen: liftCondition.optional(),
-});
+function text(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ShapeError(`${path}: expected a non-empty string`);
+  }
+  return value;
+}
 
-const acceptedAdvisory = z.strictObject({
-  tree: text,
-  package: text,
-  advisory: text,
-  reason: text,
-  reviewWhen: text,
-});
+function record(value: unknown, path: string, fields: readonly string[]): Record<string, unknown> {
+  if (!isRecord(value)) throw new ShapeError(`${path}: expected an object`);
+  for (const key of Object.keys(value)) {
+    if (!fields.includes(key)) {
+      throw new ShapeError(`${path}.${key}: unknown field (expected ${fields.join(", ")})`);
+    }
+  }
+  return value;
+}
 
-const advisoryTree = z.strictObject({
-  name: text,
-  directory: text,
-  args: z.array(text).default([]),
-});
+function list<T>(value: unknown, path: string, item: (entry: unknown, path: string) => T): T[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new ShapeError(`${path}: expected an array`);
+  return value.map((entry, index) => item(entry, `${path}[${String(index)}]`));
+}
 
-export const configSchema = z.strictObject({
-  $schema: z.string().optional(),
-  pins: z.array(pin).default([]),
-  advisoryTrees: z.array(advisoryTree).default([]),
-  acceptedLags: z.array(acceptedLag).default([]),
-  acceptedAdvisories: z.array(acceptedAdvisory).default([]),
-});
+function advisoryTree(value: unknown, path: string): ConfiguredAdvisoryTree {
+  const entry = record(value, path, ["name", "directory", "args"]);
+  return {
+    name: text(entry["name"], `${path}.name`),
+    directory: text(entry["directory"], `${path}.directory`),
+    args: list(entry["args"], `${path}.args`, text),
+  };
+}
 
-export type AuditConfig = z.infer<typeof configSchema>;
+function acceptedAdvisory(value: unknown, path: string): AcceptedAdvisory {
+  const entry = record(value, path, ["tree", "package", "advisory", "reason", "reviewWhen"]);
+  return {
+    tree: text(entry["tree"], `${path}.tree`),
+    package: text(entry["package"], `${path}.package`),
+    advisory: text(entry["advisory"], `${path}.advisory`),
+    reason: text(entry["reason"], `${path}.reason`),
+    reviewWhen: text(entry["reviewWhen"], `${path}.reviewWhen`),
+  };
+}
+
+/** The configuration read from already-parsed JSON; throws naming the field that is wrong. */
+export function parseConfig(parsed: unknown): AuditConfig {
+  if (isRecord(parsed)) {
+    const retired = Object.keys(parsed).find((key) => RETIRED_FIELDS.has(key));
+    if (retired !== undefined) {
+      throw new ShapeError(
+        `${retired}: the audit no longer judges freshness — Renovate proposes updates and holds a lag by a package rule in its configuration; remove the field`,
+      );
+    }
+  }
+  const root = record(parsed, "(root)", ["$schema", "advisoryTrees", "acceptedAdvisories"]);
+  if (root["$schema"] !== undefined) text(root["$schema"], "$schema");
+  return {
+    advisoryTrees: list(root["advisoryTrees"], "advisoryTrees", advisoryTree),
+    acceptedAdvisories: list(root["acceptedAdvisories"], "acceptedAdvisories", acceptedAdvisory),
+  };
+}
 
 /** The repository's audit file, checked; an empty configuration where it has none. */
 export function readConfig(root: string): AuditConfig {
@@ -107,7 +113,7 @@ export function readConfig(root: string): AuditConfig {
   try {
     raw = readFileSync(path, "utf-8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return configSchema.parse({});
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { advisoryTrees: [], acceptedAdvisories: [] };
     throw error;
   }
   let parsed: unknown;
@@ -116,12 +122,10 @@ export function readConfig(root: string): AuditConfig {
   } catch (error) {
     throw new Error(`${CONFIG_FILE}: not JSON (${error instanceof Error ? error.message : String(error)})`);
   }
-  const checked = configSchema.safeParse(parsed);
-  if (!checked.success) {
-    const problems = checked.error.issues
-      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-      .join("; ");
-    throw new Error(`${CONFIG_FILE}: ${problems}`);
+  try {
+    return parseConfig(parsed);
+  } catch (error) {
+    if (error instanceof ShapeError) throw new Error(`${CONFIG_FILE}: ${error.message}`);
+    throw error;
   }
-  return checked.data;
 }
