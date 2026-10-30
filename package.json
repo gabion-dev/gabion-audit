@@ -1,6 +1,6 @@
 {
   "name": "gabion-audit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Checks a repository's pinned dependencies against their newest releases and known advisories: only a lag or finding without a declared reason fails",
   "license": "BUSL-1.1",
   "author": "Pikiner, Inc.",
