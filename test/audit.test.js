@@ -121,5 +121,6 @@ test("the audit file's shape is checked before anything is judged", () => {
   assert.throws(() => parseConfig({ advisoryTrees: [{ name: "x" }] }), /advisoryTrees\[0\]\.directory: expected a non-empty string/);
   assert.throws(() => parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "w", extra: 1 }] }), /unknown field/);
   assert.throws(() => parseConfig({ pins: [] }), /no longer judges freshness/);
-  assert.deepEqual(parseConfig({}), { advisoryTrees: [], acceptedAdvisories: [] });
+  assert.throws(() => parseConfig({ acceptedVulnerabilities: [{ scope: "production", purl: "ognl", advisory: "GHSA-x", reason: "r", reviewWhen: "w" }] }), /purl: expected a package URL with its version/);
+  assert.deepEqual(parseConfig({}), { advisoryTrees: [], acceptedAdvisories: [], acceptedVulnerabilities: [] });
 });

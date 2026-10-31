@@ -1,6 +1,8 @@
 // src/audit.ts
 /**
  * The audit of one repository: the advisories in the npm trees it names,
+ * the vulnerabilities a scan of its compositions reported (judged when
+ * the caller passes them, against the declarations of the audit file),
  * and any section the caller judged itself.
  *
  * Only what is undeclared is red. An advisory kept on purpose is declared
@@ -23,7 +25,8 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { CONFIG_FILE, readConfig, type AuditConfig } from "./config.js";
-import type { AcceptedAdvisory, AdvisoryTree, Finding, Section, Verdict } from "./types.js";
+import type { AcceptedAdvisory, AdvisoryTree, Finding, JudgedVulnerabilities, Section, Verdict } from "./types.js";
+import { vulnerabilitySection } from "./vulnerabilities.js";
 
 export interface AuditOptions {
   /** The repository root: the audit file and its trees are read relative to it. */
@@ -34,6 +37,13 @@ export interface AuditOptions {
   readonly advisoryTrees?: readonly AdvisoryTree[];
   /** Sections the caller judged itself (a policy of its own), reported first. */
   readonly sections?: readonly Section[];
+  /**
+   * What a vulnerability scan of the repository's compositions reported,
+   * with every scope the scan covered. Judged against the file's
+   * acceptedVulnerabilities; absent, those declarations are left to the
+   * run that judges their scopes.
+   */
+  readonly vulnerabilities?: JudgedVulnerabilities;
 }
 
 export interface AuditResult {
@@ -220,6 +230,9 @@ export async function audit(options: AuditOptions): Promise<AuditResult> {
   if (trees.length > 0 || config.acceptedAdvisories.length > 0) {
     sections.push(advisorySection(options.root, trees, config.acceptedAdvisories));
   }
+  if (options.vulnerabilities !== undefined) {
+    sections.push(vulnerabilitySection(options.vulnerabilities, config.acceptedVulnerabilities));
+  }
   // An audit that judged nothing would pass by silence: a repository that
   // names no tree has not been audited, and the report says so.
   if (sections.length === 0) {
@@ -228,7 +241,7 @@ export async function audit(options: AuditOptions): Promise<AuditResult> {
       findings: [
         {
           outcome: "refused",
-          text: `no npm tree is named — list the trees consumers install in ${CONFIG_FILE} (advisoryTrees), or remove the audit from a repository that installs nothing from npm.`,
+          text: `no npm tree is named and no vulnerability scan was passed — list the trees consumers install in ${CONFIG_FILE} (advisoryTrees), or remove the audit from a repository that installs nothing from npm.`,
         },
       ],
       passed: "nothing audited",

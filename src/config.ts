@@ -1,14 +1,16 @@
 // src/config.ts
 /**
  * The audit's file in a repository, `gabion-audit.json` at its root: the
- * npm trees whose advisories are judged, and the advisories it keeps on
- * purpose — each with its reason and the event that ends it.
+ * npm trees whose advisories are judged, the advisories it keeps on
+ * purpose, and the vulnerabilities a scan of its compositions reports
+ * that it keeps on purpose — each with its reason and the event that ends
+ * it.
  *
  * Plain JSON, so a repository of any language can carry it. Its shape is
  * checked before anything is judged: a misspelled field would otherwise
  * read as "nothing declared" and turn a kept advisory into a refusal, or a
  * tree into nothing judged at all. The check is written by hand rather
- * than with a schema library: the file has two kinds of entry, and the
+ * than with a schema library: the file has three kinds of entry, and the
  * package then needs nothing at run time — a repository runs it with
  * `npx` before its release, and every dependency it pulled in would be
  * resolved fresh on that machine, outside the lock file of any repository.
@@ -16,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AcceptedAdvisory } from "./types.js";
+import type { AcceptedAdvisory, AcceptedVulnerability } from "./types.js";
 
 export const CONFIG_FILE = "gabion-audit.json";
 
@@ -30,6 +32,7 @@ export interface ConfiguredAdvisoryTree {
 export interface AuditConfig {
   readonly advisoryTrees: readonly ConfiguredAdvisoryTree[];
   readonly acceptedAdvisories: readonly AcceptedAdvisory[];
+  readonly acceptedVulnerabilities: readonly AcceptedVulnerability[];
 }
 
 /**
@@ -88,6 +91,21 @@ function acceptedAdvisory(value: unknown, path: string): AcceptedAdvisory {
   };
 }
 
+function acceptedVulnerability(value: unknown, path: string): AcceptedVulnerability {
+  const entry = record(value, path, ["scope", "purl", "advisory", "reason", "reviewWhen"]);
+  const purl = text(entry["purl"], `${path}.purl`);
+  if (!purl.startsWith("pkg:") || !purl.includes("@")) {
+    throw new ShapeError(`${path}.purl: expected a package URL with its version (pkg:<type>/<name>@<version>)`);
+  }
+  return {
+    scope: text(entry["scope"], `${path}.scope`),
+    purl,
+    advisory: text(entry["advisory"], `${path}.advisory`),
+    reason: text(entry["reason"], `${path}.reason`),
+    reviewWhen: text(entry["reviewWhen"], `${path}.reviewWhen`),
+  };
+}
+
 /** The configuration read from already-parsed JSON; throws naming the field that is wrong. */
 export function parseConfig(parsed: unknown): AuditConfig {
   if (isRecord(parsed)) {
@@ -98,11 +116,12 @@ export function parseConfig(parsed: unknown): AuditConfig {
       );
     }
   }
-  const root = record(parsed, "(root)", ["$schema", "advisoryTrees", "acceptedAdvisories"]);
+  const root = record(parsed, "(root)", ["$schema", "advisoryTrees", "acceptedAdvisories", "acceptedVulnerabilities"]);
   if (root["$schema"] !== undefined) text(root["$schema"], "$schema");
   return {
     advisoryTrees: list(root["advisoryTrees"], "advisoryTrees", advisoryTree),
     acceptedAdvisories: list(root["acceptedAdvisories"], "acceptedAdvisories", acceptedAdvisory),
+    acceptedVulnerabilities: list(root["acceptedVulnerabilities"], "acceptedVulnerabilities", acceptedVulnerability),
   };
 }
 
@@ -113,7 +132,9 @@ export function readConfig(root: string): AuditConfig {
   try {
     raw = readFileSync(path, "utf-8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { advisoryTrees: [], acceptedAdvisories: [] };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { advisoryTrees: [], acceptedAdvisories: [], acceptedVulnerabilities: [] };
+    }
     throw error;
   }
   let parsed: unknown;

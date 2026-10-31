@@ -39,8 +39,34 @@ The package has no runtime dependencies: `npx` installs it alone, so a release-a
 
 - An **advisory tree** is a directory of the repository `npm audit` runs in, with the arguments consumers install it with.
 - An **accepted advisory** names the tree, the package and the advisory address exactly as `npm audit` reports it, with the reason it is kept and the event that ends the reason.
+- An **accepted vulnerability** (`acceptedVulnerabilities`) names a finding of a vulnerability scan the repository runs with the library below: the scope the caller judges (`production`, `development`, an engine, a pinned tool — the caller's names), the component as a package URL with its version (`pkg:maven/ognl/ognl@3.3.4`), any identifier of the bulletin (its GHSA, its CVE — aliases of one bulletin are one bulletin), the reason and the event that ends it. A component raised to a release the bulletin still covers is a new finding: the declaration named the old release and dies with it.
+
+```json
+{
+  "acceptedVulnerabilities": [
+    {
+      "scope": "development",
+      "purl": "pkg:npm/minimatch@10.2.6",
+      "advisory": "GHSA-g3hv-75wg-m249",
+      "reason": "a build-time tool parses patterns the repository writes itself",
+      "reviewWhen": "a release of the linter that admits minimatch 11"
+    }
+  ]
+}
+```
 
 The file's shape is checked before anything is judged: a misspelled field is an error, not "nothing declared".
+
+## A vulnerability scan from the command line
+
+A repository that scans its compositions itself (OSV-Scanner, `--format json`) hands the report to the command with the scope its findings belong to — the name a declaration in `gabion-audit.json` carries:
+
+```sh
+osv-scanner scan source --format json --output-file cargo.json -L Cargo.lock || [ $? -eq 1 ]
+npx --yes gabion-audit@0.3.0 --osv-report cargo.json=cargo
+```
+
+One report per scope; several `--osv-report` arguments are judged together with the advisory trees of the file, under one verdict. A declaration of a scope no report names is dead.
 
 ## As a library
 
@@ -57,6 +83,20 @@ const result = await audit({
 console.log(result.text);
 process.exit(EXIT_CODE[result.verdict]);
 ```
+
+### Vulnerability scans
+
+A repository that scans its compositions, lock files or artifacts with [OSV-Scanner](https://google.github.io/osv-scanner/) passes the scan's JSON report, read into findings per scope, and every scope the scan covered — found or not, so a declaration for a scope the run did not judge is reported as dead rather than silently kept:
+
+```js
+import { audit, readOsvScannerReport } from "gabion-audit";
+
+const reported = readOsvScannerReport(JSON.parse(scannerJson), (source) =>
+  source.path.endsWith("application.cdx.json") ? "production" : "development");
+const result = await audit({ root: ".", vulnerabilities: { reported, judgedScopes: ["production", "development"] } });
+```
+
+Findings are counted per component and bulletin, where a bulletin is the group the scanner forms of a record and its aliases. `judgeVulnerabilities` gives the same judgement structured — each finding with the declaration that covers it, and the declarations that cover nothing — for a caller that renders it rather than prints the report. The command line judges npm trees only; vulnerability scans go through the library, because which file is which scope is the caller's knowledge.
 
 ## License
 
