@@ -3,7 +3,7 @@
  * When a declaration stops covering its finding. The event that ends a
  * reason is stated either in words ("a release of the linter that admits
  * minimatch 11") — people judge it, so it never ends by the clock — or as
- * a date (ISO 8601: 2026-12-01, or a date with its time), and then the
+ * a date (ISO 8601: YYYY-MM-DD, or a date with its time), and then the
  * declaration covers the finding until that moment and no longer: from
  * then on the finding is undeclared again, for every judge that reads the
  * file — a kept risk has an end, not a reminder that can be ignored. A

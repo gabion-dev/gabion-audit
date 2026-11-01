@@ -62,7 +62,7 @@ function reviewEvent(value: unknown, path: string): string {
   try {
     reviewDate(event);
   } catch (error) {
-    throw new ShapeError(`${path}: ${error instanceof Error ? error.message : String(error)} — write a real date (2026-12-01) or the event in words`);
+    throw new ShapeError(`${path}: ${error instanceof Error ? error.message : String(error)} — write a real date (YYYY-MM-DD, or a date with its time) or the event in words`);
   }
   return event;
 }

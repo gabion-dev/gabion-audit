@@ -55,7 +55,7 @@ The package has no runtime dependencies: `npx` installs it alone, so a release-a
 }
 ```
 
-**The event that ends a reason** (`reviewWhen`) is written in words or as a date. An event in words is judged by people and never ends by the clock. A date (ISO 8601 — `2026-12-01`, or a date with its time) ends the declaration: from that moment it covers nothing, and the advisory or the finding is refused again, naming the declaration that ended — fix it, or renew the declaration with a reason that still holds and a new date. A kept risk with a date has an end, not a reminder.
+**The event that ends a reason** (`reviewWhen`) is written in words or as a date. An event in words is judged by people and never ends by the clock. A date (ISO 8601 — `YYYY-MM-DD`, or a date with its time) ends the declaration: from that moment it covers nothing, and the advisory or the finding is refused again, naming the declaration that ended — fix it, or renew the declaration with a reason that still holds and a new date. A kept risk with a date has an end, not a reminder.
 
 The file's shape is checked before anything is judged: a misspelled field is an error, not "nothing declared", and a `reviewWhen` written as a date that is no date (`2026-13-45`) is an error, not words.
 
@@ -65,7 +65,7 @@ A repository that scans its compositions itself (OSV-Scanner, `--format json`) h
 
 ```sh
 osv-scanner scan source --format json --output-file cargo.json -L Cargo.lock || [ $? -eq 1 ]
-npx --yes gabion-audit@0.4.0 --osv-report cargo.json=cargo
+npx --yes gabion-audit@0.4.1 --osv-report cargo.json=cargo
 ```
 
 One report per scope; several `--osv-report` arguments are judged together with the advisory trees of the file, under one verdict. A declaration of a scope no report names is dead.
