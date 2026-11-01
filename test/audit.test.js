@@ -139,8 +139,8 @@ test("a declaration whose review date has come covers nothing: the advisory is r
 
 test("a review event written as a date must be a date", () => {
   assert.throws(
-    () => parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "2026-13-45" }] }),
-    /reviewWhen: "2026-13-45" is written as a date and is no date/,
+    () => parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "0000-00-00" }] }),
+    /reviewWhen: "0000-00-00" is written as a date and is no date/,
   );
   assert.equal(parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "2026-12-01T12:00:00Z" }] }).acceptedAdvisories.length, 1);
 });

@@ -31,7 +31,7 @@ The package has no runtime dependencies: `npx` installs it alone, so a release-a
       "package": "example",
       "advisory": "https://github.com/advisories/GHSA-xxxx-xxxx-xxxx",
       "reason": "the vulnerable function is never reached: the package is used only to parse trusted input",
-      "reviewWhen": "a release of example that fixes the advisory"
+      "reviewWhen": "0000-00-00"
     }
   ]
 }
@@ -39,25 +39,25 @@ The package has no runtime dependencies: `npx` installs it alone, so a release-a
 
 - An **advisory tree** is a directory of the repository `npm audit` runs in, with the arguments consumers install it with.
 - An **accepted advisory** names the tree, the package and the advisory address exactly as `npm audit` reports it, with the reason it is kept and the event that ends the reason.
-- An **accepted vulnerability** (`acceptedVulnerabilities`) names a finding of a vulnerability scan the repository runs with the library below: the scope the caller judges (`production`, `development`, an engine, a pinned tool — the caller's names), the component as a package URL with its version (`pkg:maven/ognl/ognl@3.3.4`), any identifier of the bulletin (its GHSA, its CVE — aliases of one bulletin are one bulletin), the reason and the event that ends it. A component raised to a release the bulletin still covers is a new finding: the declaration named the old release and dies with it.
+- An **accepted vulnerability** (`acceptedVulnerabilities`) names a finding of a vulnerability scan the repository runs with the library below: the scope the caller judges (`production`, `development`, an engine, a pinned tool — the caller's names), the component as a package URL with its version (`pkg:maven/com.example/example@1.2.3`), any identifier of the bulletin (its GHSA, its CVE — aliases of one bulletin are one bulletin), the reason and the event that ends it. A component raised to a release the bulletin still covers is a new finding: the declaration named the old release and dies with it.
 
 ```json
 {
   "acceptedVulnerabilities": [
     {
       "scope": "development",
-      "purl": "pkg:npm/minimatch@10.2.6",
-      "advisory": "GHSA-g3hv-75wg-m249",
-      "reason": "a build-time tool parses patterns the repository writes itself",
-      "reviewWhen": "a release of the linter that admits minimatch 11"
+      "purl": "pkg:npm/example@1.2.3",
+      "advisory": "GHSA-xxxx-xxxx-xxxx",
+      "reason": "why the bulletin does not apply here, in one or two sentences",
+      "reviewWhen": "0000-00-00"
     }
   ]
 }
 ```
 
-**The event that ends a reason** (`reviewWhen`) is written in words or as a date. An event in words is judged by people and never ends by the clock. A date (ISO 8601 — `YYYY-MM-DD`, or a date with its time) ends the declaration: from that moment it covers nothing, and the advisory or the finding is refused again, naming the declaration that ended — fix it, or renew the declaration with a reason that still holds and a new date. A kept risk with a date has an end, not a reminder.
+**The event that ends a reason** (`reviewWhen`) is written in words or as a date. An event in words is judged by people and never ends by the clock. A date (ISO 8601 — `YYYY-MM-DD`, or a date with its time) ends the declaration: from that moment it covers nothing, and the advisory or the finding is refused again, naming the declaration that ended — fix it, or renew the declaration with a reason that still holds and a new date. A kept risk with a date has an end, not a reminder. In the examples above, `0000-00-00` stands in for the date on purpose: copied unchanged, it is refused (below) rather than read as a declaration.
 
-The file's shape is checked before anything is judged: a misspelled field is an error, not "nothing declared", and a `reviewWhen` written as a date that is no date (`2026-13-45`) is an error, not words.
+The file's shape is checked before anything is judged: a misspelled field is an error, not "nothing declared", and a `reviewWhen` written as a date that is no date (`0000-00-00`) is an error, not words.
 
 ## A vulnerability scan from the command line
 
@@ -65,8 +65,10 @@ A repository that scans its compositions itself (OSV-Scanner, `--format json`) h
 
 ```sh
 osv-scanner scan source --format json --output-file cargo.json -L Cargo.lock || [ $? -eq 1 ]
-npx --yes gabion-audit@0.4.1 --osv-report cargo.json=cargo
+npx --yes gabion-audit@<version> --osv-report cargo.json=cargo
 ```
+
+`<version>` is the release of `gabion-audit` the repository pins.
 
 One report per scope; several `--osv-report` arguments are judged together with the advisory trees of the file, under one verdict. A declaration of a scope no report names is dead.
 
