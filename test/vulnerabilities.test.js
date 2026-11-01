@@ -1,7 +1,8 @@
 // test/vulnerabilities.test.js
 // The judgement of a vulnerability scan: an OSV-Scanner report read into
 // findings per scope, declarations matched by any identifier of a
-// bulletin, and the two ways a declaration dies.
+// bulletin, the two ways a declaration dies, and the review date that
+// ends one.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -121,4 +122,24 @@ test("the structured judgement names the covering declaration and the dead ones"
   assert.equal(judgement.findings[0].declaration?.reason, "kept for the test");
   assert.equal(judgement.findings[1].declaration, null);
   assert.deepEqual(judgement.dead.map((entry) => entry.cause), ["scope-not-judged", "no-longer-reported"]);
+});
+
+test("a declaration whose review date has come covers nothing: the finding is refused again, the declaration is not dead", async () => {
+  const now = new Date("2026-12-01T00:00:00Z");
+  const due = declaration({ reviewWhen: "2026-12-01" });
+  const judgement = judgeVulnerabilities(judged(), [due], now);
+  assert.equal(judgement.findings[0].declaration, null);
+  assert.equal(judgement.findings[0].expired?.reviewWhen, "2026-12-01");
+  assert.deepEqual(judgement.dead, []);
+  const result = await audit({ root: ".", now, config: config([due]), vulnerabilities: judged() });
+  assert.match(result.text, /ognl@3\.3\.4 — GHSA-crwc-vw2r-qr6m .* ended on its review date 2026-12-01 \(kept for the test\) — fix it, or renew/);
+  const renewed = judgeVulnerabilities(judged(), [due, declaration({ reviewWhen: "2027-01-01", reason: "renewed" })], now);
+  assert.equal(renewed.findings[0].declaration?.reason, "renewed");
+  assert.equal(renewed.findings[0].expired, null);
+});
+
+test("a review date ahead, or an event in words, keeps the declaration", () => {
+  const now = new Date("2026-12-01T00:00:00Z");
+  assert.equal(judgeVulnerabilities(judged(), [declaration({ reviewWhen: "2026-12-01T00:00:01Z" })], now).findings[0].declaration?.reason, "kept for the test");
+  assert.equal(judgeVulnerabilities(judged(), [declaration({ reviewWhen: "never" })], now).findings[0].declaration?.reason, "kept for the test");
 });

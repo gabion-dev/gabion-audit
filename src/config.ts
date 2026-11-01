@@ -18,6 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { reviewDate } from "./review.js";
 import type { AcceptedAdvisory, AcceptedVulnerability } from "./types.js";
 
 export const CONFIG_FILE = "gabion-audit.json";
@@ -55,6 +56,17 @@ function text(value: unknown, path: string): string {
   return value;
 }
 
+/** The event that ends a reason: words, or a date that is a date (review.ts). */
+function reviewEvent(value: unknown, path: string): string {
+  const event = text(value, path);
+  try {
+    reviewDate(event);
+  } catch (error) {
+    throw new ShapeError(`${path}: ${error instanceof Error ? error.message : String(error)} — write a real date (2026-12-01) or the event in words`);
+  }
+  return event;
+}
+
 function record(value: unknown, path: string, fields: readonly string[]): Record<string, unknown> {
   if (!isRecord(value)) throw new ShapeError(`${path}: expected an object`);
   for (const key of Object.keys(value)) {
@@ -87,7 +99,7 @@ function acceptedAdvisory(value: unknown, path: string): AcceptedAdvisory {
     package: text(entry["package"], `${path}.package`),
     advisory: text(entry["advisory"], `${path}.advisory`),
     reason: text(entry["reason"], `${path}.reason`),
-    reviewWhen: text(entry["reviewWhen"], `${path}.reviewWhen`),
+    reviewWhen: reviewEvent(entry["reviewWhen"], `${path}.reviewWhen`),
   };
 }
 
@@ -102,7 +114,7 @@ function acceptedVulnerability(value: unknown, path: string): AcceptedVulnerabil
     purl,
     advisory: text(entry["advisory"], `${path}.advisory`),
     reason: text(entry["reason"], `${path}.reason`),
-    reviewWhen: text(entry["reviewWhen"], `${path}.reviewWhen`),
+    reviewWhen: reviewEvent(entry["reviewWhen"], `${path}.reviewWhen`),
   };
 }
 

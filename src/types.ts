@@ -11,7 +11,7 @@ export interface AcceptedAdvisory {
   /** The advisory address exactly as `npm audit` reports it. */
   readonly advisory: string;
   readonly reason: string;
-  /** The event that ends the reason, in words. */
+  /** The event that ends the reason: in words, judged by people, or a date (ISO 8601), on which the declaration stops covering the advisory. */
   readonly reviewWhen: string;
 }
 
@@ -29,7 +29,7 @@ export interface AcceptedVulnerability {
   /** The bulletin: any identifier of it (GHSA, CVE, the ecosystem's own) — aliases of one bulletin are one bulletin. */
   readonly advisory: string;
   readonly reason: string;
-  /** The event that ends the reason, in words. */
+  /** The event that ends the reason: in words, judged by people, or a date (ISO 8601), on which the declaration stops covering the finding. */
   readonly reviewWhen: string;
 }
 
@@ -66,6 +66,8 @@ export interface VulnerabilityJudgement {
     readonly reported: ReportedVulnerability;
     /** The declaration that keeps the finding on purpose, or null when it is undeclared. */
     readonly declaration: AcceptedVulnerability | null;
+    /** The declaration that kept the finding until its review date came — the finding is undeclared again; null when there is none. */
+    readonly expired: AcceptedVulnerability | null;
   }[];
   readonly dead: readonly {
     readonly declaration: AcceptedVulnerability;

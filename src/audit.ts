@@ -8,7 +8,8 @@
  * Only what is undeclared is red. An advisory kept on purpose is declared
  * in the audit file with its reason and the event that ends it; a
  * declaration that matches nothing any more is red as well, so an excuse
- * cannot outlive its cause and cover the next advisory unjudged.
+ * cannot outlive its cause and cover the next advisory unjudged, and a
+ * declaration whose review date has come covers nothing (review.ts).
  *
  * Whether a dependency is current is not judged here: Renovate proposes
  * each newer release as a pull request, and a lag kept on purpose is a
@@ -25,6 +26,7 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { CONFIG_FILE, readConfig, type AuditConfig } from "./config.js";
+import { isReviewDue } from "./review.js";
 import type { AcceptedAdvisory, AdvisoryTree, Finding, JudgedVulnerabilities, Section, Verdict } from "./types.js";
 import { vulnerabilitySection } from "./vulnerabilities.js";
 
@@ -44,6 +46,8 @@ export interface AuditOptions {
    * run that judges their scopes.
    */
   readonly vulnerabilities?: JudgedVulnerabilities;
+  /** The moment review dates are judged against; now when absent. */
+  readonly now?: Date;
 }
 
 export interface AuditResult {
@@ -116,7 +120,7 @@ function auditTree(tree: string, cwd: string, args: readonly string[]): Reported
   return [...advisories.values()];
 }
 
-function advisorySection(root: string, trees: readonly AdvisoryTree[], accepted: readonly AcceptedAdvisory[]): Section {
+function advisorySection(root: string, trees: readonly AdvisoryTree[], accepted: readonly AcceptedAdvisory[], now: Date): Section {
   const findings: Finding[] = [];
   const reported: ReportedAdvisory[] = [];
   const judged = new Set<string>();
@@ -147,15 +151,22 @@ function advisorySection(root: string, trees: readonly AdvisoryTree[], accepted:
     declaration.advisory === advisory.advisory;
 
   for (const advisory of reported) {
-    const declaration = accepted.find((candidate) => matches(candidate, advisory));
+    const matching = accepted.filter((candidate) => matches(candidate, advisory));
+    const declaration = matching.find((candidate) => !isReviewDue(candidate.reviewWhen, now));
+    const expired = matching[0];
     const subject = `${advisory.tree} tree: ${advisory.package} — ${advisory.severity}, ${advisory.title} (${advisory.advisory})`;
     findings.push(
-      declaration === undefined
-        ? {
-            outcome: "refused",
-            text: `${subject}. Fix it (an upgrade of the package that pulls it in, or an override) or declare it in ${CONFIG_FILE} with its reason.`,
-          }
-        : { outcome: "accepted", text: `${subject} — declared: ${declaration.reason}` },
+      declaration !== undefined
+        ? { outcome: "accepted", text: `${subject} — declared: ${declaration.reason}` }
+        : expired !== undefined
+          ? {
+              outcome: "refused",
+              text: `${subject}. Its declaration in ${CONFIG_FILE} ended on its review date ${expired.reviewWhen} (${expired.reason}) — fix it, or renew the declaration with a reason that still holds and a new review date.`,
+            }
+          : {
+              outcome: "refused",
+              text: `${subject}. Fix it (an upgrade of the package that pulls it in, or an override) or declare it in ${CONFIG_FILE} with its reason.`,
+            },
     );
   }
   for (const declaration of accepted) {
@@ -228,10 +239,10 @@ export async function audit(options: AuditOptions): Promise<AuditResult> {
   const trees = [...config.advisoryTrees, ...(options.advisoryTrees ?? [])];
   const sections: Section[] = [...(options.sections ?? [])];
   if (trees.length > 0 || config.acceptedAdvisories.length > 0) {
-    sections.push(advisorySection(options.root, trees, config.acceptedAdvisories));
+    sections.push(advisorySection(options.root, trees, config.acceptedAdvisories, options.now ?? new Date()));
   }
   if (options.vulnerabilities !== undefined) {
-    sections.push(vulnerabilitySection(options.vulnerabilities, config.acceptedVulnerabilities));
+    sections.push(vulnerabilitySection(options.vulnerabilities, config.acceptedVulnerabilities, options.now ?? new Date()));
   }
   // An audit that judged nothing would pass by silence: a repository that
   // names no tree has not been audited, and the report says so.

@@ -55,7 +55,9 @@ The package has no runtime dependencies: `npx` installs it alone, so a release-a
 }
 ```
 
-The file's shape is checked before anything is judged: a misspelled field is an error, not "nothing declared".
+**The event that ends a reason** (`reviewWhen`) is written in words or as a date. An event in words is judged by people and never ends by the clock. A date (ISO 8601 — `2026-12-01`, or a date with its time) ends the declaration: from that moment it covers nothing, and the advisory or the finding is refused again, naming the declaration that ended — fix it, or renew the declaration with a reason that still holds and a new date. A kept risk with a date has an end, not a reminder.
+
+The file's shape is checked before anything is judged: a misspelled field is an error, not "nothing declared", and a `reviewWhen` written as a date that is no date (`2026-13-45`) is an error, not words.
 
 ## A vulnerability scan from the command line
 
@@ -63,7 +65,7 @@ A repository that scans its compositions itself (OSV-Scanner, `--format json`) h
 
 ```sh
 osv-scanner scan source --format json --output-file cargo.json -L Cargo.lock || [ $? -eq 1 ]
-npx --yes gabion-audit@0.3.0 --osv-report cargo.json=cargo
+npx --yes gabion-audit@0.4.0 --osv-report cargo.json=cargo
 ```
 
 One report per scope; several `--osv-report` arguments are judged together with the advisory trees of the file, under one verdict. A declaration of a scope no report names is dead.
@@ -96,7 +98,7 @@ const reported = readOsvScannerReport(JSON.parse(scannerJson), (source) =>
 const result = await audit({ root: ".", vulnerabilities: { reported, judgedScopes: ["production", "development"] } });
 ```
 
-Findings are counted per component and bulletin, where a bulletin is the group the scanner forms of a record and its aliases. `judgeVulnerabilities` gives the same judgement structured — each finding with the declaration that covers it, and the declarations that cover nothing — for a caller that renders it rather than prints the report. The command line judges npm trees only; vulnerability scans go through the library, because which file is which scope is the caller's knowledge.
+Findings are counted per component and bulletin, where a bulletin is the group the scanner forms of a record and its aliases. `judgeVulnerabilities` gives the same judgement structured — each finding with the declaration that covers it (or the one whose review date ended it), and the declarations that cover nothing — for a caller that renders it rather than prints the report; `isReviewDue` and `reviewDate` tell such a caller when a declaration's date comes. The command line judges npm trees only; vulnerability scans go through the library, because which file is which scope is the caller's knowledge.
 
 ## License
 

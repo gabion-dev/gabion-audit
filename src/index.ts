@@ -11,4 +11,5 @@ export { audit, EXIT_CODE, report, SourceUnavailable, type AuditOptions, type Au
 export { readOsvScannerReport, type OsvScannerSource } from "./osv-scanner.js";
 export { judgeVulnerabilities, vulnerabilitySection } from "./vulnerabilities.js";
 export { CONFIG_FILE, parseConfig, readConfig, type AuditConfig, type ConfiguredAdvisoryTree } from "./config.js";
+export { isReviewDue, reviewDate } from "./review.js";
 export type * from "./types.js";

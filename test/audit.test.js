@@ -124,3 +124,23 @@ test("the audit file's shape is checked before anything is judged", () => {
   assert.throws(() => parseConfig({ acceptedVulnerabilities: [{ scope: "production", purl: "ognl", advisory: "GHSA-x", reason: "r", reviewWhen: "w" }] }), /purl: expected a package URL with its version/);
   assert.deepEqual(parseConfig({}), { advisoryTrees: [], acceptedAdvisories: [], acceptedVulnerabilities: [] });
 });
+
+test("a declaration whose review date has come covers nothing: the advisory is refused, naming it", async () => {
+  const now = new Date("2026-12-01T00:00:00Z");
+  const due = await audit({ root, now, config: config([tree("lodash")], [declaration({ reviewWhen: "2026-12-01" })]) });
+  assert.equal(due.verdict, "refused");
+  assert.match(due.text, /ended on its review date 2026-12-01 \(kept for the test\) — fix it, or renew the declaration/);
+  assert.doesNotMatch(due.text, /remove the declaration/);
+  const ahead = await audit({ root, now, config: config([tree("lodash")], [declaration({ reviewWhen: "2026-12-02" })]) });
+  assert.equal(ahead.verdict, "passed");
+  const words = await audit({ root, now, config: config([tree("lodash")], [declaration({ reviewWhen: "a release that fixes it" })]) });
+  assert.equal(words.verdict, "passed");
+});
+
+test("a review event written as a date must be a date", () => {
+  assert.throws(
+    () => parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "2026-13-45" }] }),
+    /reviewWhen: "2026-13-45" is written as a date and is no date/,
+  );
+  assert.equal(parseConfig({ acceptedAdvisories: [{ tree: "x", package: "y", advisory: "z", reason: "r", reviewWhen: "2026-12-01T12:00:00Z" }] }).acceptedAdvisories.length, 1);
+});
